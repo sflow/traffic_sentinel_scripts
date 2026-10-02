@@ -5,7 +5,7 @@
 // ttl: 60
 // inputs: zone,debug,allports
 // resultFormat: json
-// authClient: 127.0.0.1
+// authClients: 127.0.0.1
 
 var allports = allports || "false";
 var zone = zone || null;
