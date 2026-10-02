@@ -1,2 +1,2 @@
-# traffic_sentinel_scripts
-Scripting examples for InMon Traffic Sentinel
+# Traffic Sentinel Scripts
+Scripting examples for [InMon Traffic Sentinel](https://inmon.com/products/trafficsentinel.php)
