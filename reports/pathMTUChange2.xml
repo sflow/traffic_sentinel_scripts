@@ -1,0 +1,54 @@
+<template name="TCP Path MTU" category="qos">
+  <description>Report on TCP PathMTU</description>
+  <section name="PathMTU change detection">
+    <description>Raise event on pathMTU change</description>
+    <input label="Interval" name="interval" type="interval.realtime" value="last60minutes"/>
+    <input label="Allowed" name="allowed" type="string" value="8930,9000,9216"/>
+    <script><![CDATA[
+
+var allowed = allowed || "";
+var allowedSet = {};
+for each (var pmtu in allowed.split(",")) {
+  allowedSet[pmtu.toString()] = true;
+}
+
+function isAllowed(mtu) { return allowedSet[mtu.toString()]; }
+
+var rpt = Report.current();
+
+var rows = 0;
+var events = 0;
+
+function raiseEvent(msg) {
+  rpt.paragraph(msg);
+  rpt.sendEvent("threshold", "severe", msg);
+}
+
+var view     = "traffic";
+var select   = "time,sourceaddress,destinationaddress,min(tcppmtu)";
+var where    = "tcppmtu != null";
+var query = Query.topN(view, select, where, interval);
+query.group = 1;
+query.dedup = "off";
+var data = {};
+query.run(function(row) {
+  rows++;
+  var key = row[1] + "-" + row[2];
+  // look for changes,  but not 8930->9000 or 9000->8930 because those happen all the time
+  // when looking at encap/decap to/from VXLAN.
+  if(data[key]
+     && row[3] != data[key]
+     && !(isAllowed(row[3]) && isAllowed(data[key]))) {
+     events++;
+    rpt.paragraph("pMTU for " + key + " changed from " + data[key] + " to " + row[3] + " at " + row[0]);
+  }
+  data[key] = row[3];
+});
+
+rpt.paragraph("rows=" + rows + " events=" + events);
+if(events)
+    raiseEvent("pMTU changed on " + events + " TCP pairs (not between allowed values: " + allowed + ")");
+
+    ]]></script>
+  </section>
+</template>

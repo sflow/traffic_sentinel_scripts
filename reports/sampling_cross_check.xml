@@ -1,0 +1,170 @@
+<template author="Neil McKee" category="miscellaneous" name="Agent Sampling Cross-check">
+    <description>Check counters v. flows for sampling accuracy. Report on data-sources with frames estimates outside of expected bounds. Testr in/out directions separately.</description>
+    <section name="Agent Sampling Cross-check">
+  <description>Check counters v. flows for sampling accuracy. Frames estimates from agent data-sources are checked against hardware interface counters. Any that lie outside the 99th percentile confidence interval cause the agent to be listed. The agent with the largest discrepancy is broken out in more detail in the second table, showing the estimates that were outside the confidence interval. Note that in a large network some estimates are expected to fall outside the 99th percentile, but not consistently so.</description>
+        <input label="Path" name="path" required="true" type="path.agent" value=">"/>
+        <input label="Min Frames" name="minFrames" required="true" type="integer" value="100000"/>
+        <input label="Min Samples" name="minSamples" required="true" type="integer" value="1000"/>
+        <input label="Truncate" name="truncate" required="true" type="integer" value="20"/>
+        <input label="Direction" name="direction" required="true" type="string" value="in">
+            <option value="in">in</option>
+            <option value="out">out</option>
+            <option value="both">both</option>
+        </input>
+        <input label="Flows" name="flows" required="true" type="string" value="sflow">
+            <option value="sflow">sflow</option>
+            <option value="netflow">netflow</option>
+        </input>
+        <input name="interval" required="true" type="interval.history" value="last6hours"/>
+        <input label="sysObjectID" name="sysObjId" required="false" type="string" value=""/>
+        <script><![CDATA[
+
+minFrames = parseInt(minFrames);
+minSamples = parseInt(minSamples);
+var sysDescr = sysDescr || null;
+var sysObjId = sysObjId || null;
+
+var report = Report.current();
+
+// collect traffic data by datasource
+var data = {};
+var view     = "traffic";
+var select   = "datasource,interfacedirection,max(esr),max(meanskip),samples,frames";
+
+var filter = "path='" + path + "'&dsflowsprotocol=" + flows;
+if(sysObjId)
+  filter += "&sysobjectid(agent)=" + sysObjId;
+report.paragraph("Filter: " + filter);
+
+var query = Query.topN(view, select, filter, interval);
+query.dedup = "off";
+query.run(function(row) {
+  var [ds,dirn,esr,meanskip,samples,fr] = row;
+  if(ds) {
+    if(dirn == 1) dirn = "in";
+    if(dirn == 2) dirn = "out";
+    data[ds+dirn] = { ds:ds, dirn:dirn, esr:esr, meanskip:meanskip, samples:samples, fr:fr };
+  }
+});
+
+// build interface list filter	  
+var dslist = [];
+for each(var rec in data) dslist.push(rec.ds);
+report.paragraph("" + dslist.length + " sampling datasources selected");
+if(dslist.length > 0) {
+	    
+  filter = "interface=" + dslist.join(",");
+  
+  // merge equivalent counters
+  view = "ifcounters";
+  select = "interface,frames_in,frames_out";
+  var query = Query.topN(view, select, filter, interval);
+  query.dedup = "off";
+  var if_checks=0;
+  query.run(function(row) {
+    var [intf,cfr_in,cfr_out] = row;
+    var rec = data[intf+"in"]; // in
+    var found = false;
+    if(rec) {
+      found = true;
+      rec.cfr = cfr_in;
+    }
+    rec = data[intf+"out"]; // out
+    if(rec) {
+      found = true;
+      rec.cfr = cfr_out;
+    }
+    if(found) if_checks++;
+  });
+  report.paragraph("" + if_checks + " datasources cross-checked");
+
+  function errorPC(fr, cfr) {
+    err = (100 * (fr - cfr)) / (cfr);
+    return err;
+  }
+
+  function error95PC(s) {
+    // apply equation from https://sflow.org/packetSamplingBasics/
+    // to return error percentage bounds for 95% confidence interval
+    return 196 * Math.sqrt(1 / s);
+  }
+
+  function error99PC(s) {
+    return 257.6 * Math.sqrt(1 / s);
+  }
+
+  function maxAbs(num1, num2) {
+    return Math.max(Math.abs(num1||0), Math.abs(num2||0));
+  }
+
+  var net = Network.current();
+  var agents = {};
+
+  function reportErr(rec) {
+    var [ip,ifIndex] = rec.ds.split(">");
+
+    if(!agents[ip]) agents[ip] = { ip:ip, ds:[], maxErr: 0 };
+    var ag = agents[ip];
+    ag.ds.push(rec);
+    net.path = ip;
+    ag.zone = net.zone();
+    ag.group = net.group();
+    ag.sysObjId = net.sysObjectID();
+    ag.sysDescr = net.sysDescr();
+    ag.maxErr = maxAbs(rec.err, ag.maxErr);
+  }
+
+  for each (var rec in data) {
+    //report.paragraph(JSON.stringify(rec));	    
+    rec.err95 = error95PC(rec.samples);
+    rec.err99 = error99PC(rec.samples);
+    if((direction == "both" || direction == rec.dirn)
+       && rec.fr > 0
+       && rec.cfr > minFrames
+       && rec.samples > minSamples) {
+      rec.err = errorPC(rec.fr, rec.cfr);
+      if(Math.abs(rec.err) > Math.abs(rec.err99))
+	reportErr(rec);
+    }
+  }
+
+  var results = Table.create(["zone", "group", "agent","Max Error %","sysObjectID","sysDescr"],
+			     ["string", "string", "agent","double","string","string"]);
+  for each (var ag in agents) {
+    results.addRow([ag.zone, ag.group, ag.ip, ag.maxErr, ag.sysObjId, ag.sysDescr]);
+  }
+  results.sort(3, "descending");
+  if(results.nrows > truncate)
+    results.nrows = truncate;
+  report.table(results);
+  
+  if(results.nrows == 0) {
+    report.paragraph("All datasource frames estimates are within expected error bounds");
+  }
+  else {
+    var agIdx = results.columnIndex("agent");
+    var topAg = results.cell(0,agIdx);
+    var ag = agents[topAg];
+    var detail = Table.create(["Interface", "Direction", "Error %", "Under/Over"], ["interface", "string", "double", "string"]);
+    detail.addColumn("Frames (flows)", "double", []);
+    detail.addColumn("Frames (counters)", "double", []);
+    detail.addColumn("Expected Lower Bound (99th Percentile)", "double", []);
+    detail.addColumn("Expected Upper Bound (99th Percentile)", "double", []);
+    detail.addColumn("samples", "double", []);
+    detail.addColumn("Configured sampling rate", "integer", []);
+    detail.addColumn("Effective sampling rate", "integer", []);
+    for each (var rec in ag.ds) {
+      var row = [ rec.ds, rec.dirn, Math.abs(rec.err), (rec.err < 0 ? "UNDER" : "OVER") ];
+      row.push(rec.fr, rec.cfr);
+      var errFactor = rec.err99 / 100;
+      row.push(rec.fr - (rec.fr * errFactor), rec.fr + (rec.fr * errFactor));
+      row.push(rec.samples, rec.meanskip, rec.esr);
+      detail.addRow(row);
+    }
+    detail.sort(2, "descending");
+    report.table(detail);
+  }
+} // no sampling interfaces
+       ]]></script>
+    </section>
+</template>

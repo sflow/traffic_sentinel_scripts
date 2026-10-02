@@ -1,0 +1,541 @@
+<template name="SMMP Examples" category="miscellaneous">
+  <description>Examples using the SNMP javascript class</description>
+  <section name="System Group">
+    <description>Get System Group</description>
+    <input name="device" type="address" required="true" />
+    <input name="community" type="string" required="false" />
+    <script><![CDATA[
+ 
+//////////////////// utility functions //////////////////////////////
+
+function walkSNMPTable(s, tab, col, ans) {
+  var table = tab + "." + col;
+  s.oid = table;
+  var walking = true;
+  var nrows = 0;
+  var err = false;
+  while(walking) {
+    try {
+      var vals = s.getnext();
+      var thisoid = s.oid[0];
+      if(thisoid.indexOf(table) != 0) walking = false;
+      else {
+        var key = thisoid.slice(table.length+1);
+        ans[key] = vals[0];
+        nrows++;
+      }
+    }
+    catch(exception) {
+      err = true;
+      walking = false;
+    }
+  }
+  return (nrows > 0 || !err);
+}
+
+//////////////////// main script //////////////////////////////
+
+var report = new Report();
+
+var s = new SNMP();
+s.host = device;
+
+if(typeof(community) != 'undefined') {
+  s.useconfig = false;
+  s.community = community;
+  s.version = "2c";
+}
+
+var rows = {};
+var walkOK = walkSNMPTable(s, "1.3.6.1.2.1", "1", rows);
+if(walkOK) {
+  var results = Table.create(["id", "value"],["string", "string"]);
+  for (var k in rows) results.addRow([k, rows[k]]);
+  results.sort(0);
+  report.table(results);
+}
+else {
+  report.paragraph("walk failed");
+}
+
+    ]]></script>
+  </section>
+  <section name="Test for MIB">
+    <description>Test agents to see which ones support a given MIB table</description>
+    <input name="path" type="path" value=">" />
+    <input name="table" type="string" value="1.3.6.1.2.1" />
+    <script><![CDATA[
+var rpt = Report.current();
+rpt.heading("Test for MIB table: " + table);
+var results = Table.create(["zone", "group", "agent", "MIB var", "sysObjectID", "sysDescr"], ["string", "string", "agent", "string", "string", "string"]);
+var s = new SNMP();
+s.retryintervals = [1000];
+var n = Network.current();
+n.path = path;
+var agentsInPath = n.agents();
+for each (var device in agentsInPath) {
+  n.path = device;
+  s.host = device;
+  s.oid = table;
+  var row = [n.zone(), n.group(), device, "<not supported>", n.sysObjectID(), n.sysDescr()];
+  try {
+    var vals = s.getnext();
+    var thisoid = s.oid[0];
+    if(thisoid.indexOf(table) == 0) row[3] = "" + thisoid +" = " + vals[0];
+  }
+  catch(ex) {
+    // row[3] = ex;
+  }
+  println("row=" + row);
+  results.addRow(row);
+}
+
+rpt.table(results);
+    ]]></script>
+  </section>
+  <section name="Walk SNMP MIB Table">
+    <description>Walk any SNMP MIB Table</description>
+    <input name="device" type="agent" required="true" />
+    <input name="community" type="string" required="false" />
+    <input label="MIB Table" name="table" type="string" value="1.3.6.1.2.1.2.2.1" />
+    <input label="Column(s)" name="columns" type="string" value="2,5,6" />
+    <input label="Headings(s)" name="headings" type="string" value="descr,speed,MAC" required="false" />
+    <input label="Row Limit" name="rowLimit" type="integer" value="1000" required="false" />
+    <input label="Stop OID" name="stop" type="string" value="" required="false" />
+    <input label="Formatting" name="format" type="string" value="auto">
+      <option value="auto"/>
+      <option value="hex" />
+      <option value="displayorhex" />
+      <option value="displayordotteddecimal" />
+    </input>
+    <input name="debug" type="string" value="no">
+      <option value="yes" />
+      <option value="no" />
+    </input>
+    
+    <script><![CDATA[
+
+//////////////////// defaults //////////////////////////////
+
+var rowLimit = rowLimit || 100000;
+var stop = stop || null;
+var headings = headings || "";
+var debug = debug || "no";
+
+debug = (debug == "yes");
+headings = headings.split(",");
+columns = columns.split(",");
+
+//////////////////// utility functions //////////////////////////////
+
+var report = new Report();
+
+function dbg(msg) {
+    if(debug)
+	report.paragraph(msg);
+}
+
+function walkSNMPTable(s, tab, cols, ans, stopOid, count) {
+    var oids = [];
+    var outc = [];
+    var done = [];
+    var nrows = 0;
+    var err = false;
+    var walking = (cols.length > 0);
+    var tabOidLen = tab.split(".").length;
+    for (var cc in cols) {
+	outc[cc] = cc;
+	oids[cc] = tab + "." + cols[cc];
+	done[cc] = false;
+    }
+    s.oid = oids.slice();
+    dbg("tabOidLen=" + tabOidLen);
+    dbg("s.oid=" + JSON.stringify(s.oid));
+    dbg("outc=" + JSON.stringify(outc));
+
+    while(walking) {
+	try {
+	    var vals = s.getnext();
+	    dbg("next oids = " + JSON.stringify(s.oid));
+	    dbg("next values = " + JSON.stringify(vals));
+	    var terminated = 0;
+	    for (var cc in s.oid) {
+		var oid = s.oid[cc];
+		var valIdx = outc[cc];
+		if(oid.indexOf(oids[cc]) != 0) {	
+		    dbg("terminating column (outside table column)");
+		    done[valIdx] = true;
+		    terminated++;
+		}
+		else {
+		    var oidArray = oid.split(".");
+		    var key = oidArray.slice(tabOidLen + 1);
+		    key = key.join(".");
+		    if(!ans[key]) ans[key] = [];
+		    ans[key][outc[cc]] = vals[cc];
+		}
+		if(oid.indexOf(stopOid) == 0) {
+		    dbg("terminating column (stopOid)");
+		    done[valIdx] = true;
+		    terminated++;
+		}
+	    }
+	    if(terminated > 0) {
+		var new_oid = [];
+		var new_outc = [];
+		for (var cc in s.oid) {
+		    var valIdx = outc[cc];
+		    if(!done[valIdx]) {
+			new_oid.push(s.oid[cc]);
+			new_outc.push(valIdx);
+		    }
+		}
+		s.oid = new_oid;
+		outc = new_outc;
+		dbg("remaining columns=" + s.oid.length);
+		if(s.oid.length == 0) {
+		    dbg("terminating walk (all columns terminated)");
+		    walking = false;
+		}
+	    }
+	    if(++nrows > count) {
+		dbg("terminating walk (row count)");
+		walking = false;
+	    }
+	}
+	catch(e) {
+	    dbg("caught exception: " + e);
+	    err = true;
+	    walking = false;
+	}
+    }
+    return (nrows > 0 || !err);
+}
+
+//////////////////// main script //////////////////////////////
+
+var s = new SNMP();
+s.host = device;
+s.octetsformat = format;
+if(typeof(community) != 'undefined') {
+  s.useconfig = false;
+  s.community = community;
+  s.version = "2c";
+}
+
+var data = {};
+dbg("starting walk");
+var walkOK = walkSNMPTable(s, table, columns, data, stop, rowLimit);
+if(walkOK) {
+    // results table columns
+    var results = Table.create(["id"],["string"]);
+    for(var cc in columns) {
+      var hdr = headings[cc] || columns[cc];
+      results.addColumn(hdr, "string", []);
+    }
+    // results table rows
+    for (var k in data) {
+	var nextRow = [k];
+	for(var cc in columns) {
+	    var cell = data[k][cc];
+	    nextRow.push(cell);
+	}
+	results.addRow(nextRow);
+    }
+    results.sort(0);
+    report.table(results);
+}
+else {
+  report.paragraph("walk failed");
+}
+    ]]></script>
+  </section>
+  <section name="Spanning Tree">
+    <description>Get Spanning Tree information</description>
+    <input name="path" type="path" value=">" required="true" />
+    <script><![CDATA[
+ 
+//////////////////// utility functions //////////////////////////////
+
+function walkSNMPTable(s, tab, col, ans, stopOid) {
+  var table = tab + "." + col;
+  s.oid = table;
+  var walking = true;
+  var nrows = 0;
+  var err = false;
+  while(walking) {
+    try {
+      var vals = s.getnext();
+      var thisoid = s.oid[0];
+      if((thisoid.indexOf(table) != 0) ||
+         (thisoid.indexOf(stopOid) == 0)) walking = false;
+      else {
+        var key = thisoid.slice(table.length+1);
+        ans[key] = vals[0];
+        nrows++;
+      }
+    }
+    catch(exception) {
+      err = true;
+      walking = false;
+    }
+  }
+  return (nrows > 0 || !err);
+}
+
+//////////////////// main script //////////////////////////////
+
+var report = new Report();
+  var dot1stp = Table.create(["agent","spec","priority","ticks","lastChange","changes","root","rootAgent","rootcost","rootport","maxAge","hello","hold","forward","brMaxAge","brHello","brForward"], ["agent","string","string","integer","string","integer","string","agent","integer","string","integer","integer","integer","integer","integer","integer","integer"]);
+
+var n = Network.current();
+n.path = path;
+var s = new SNMP();
+s.retryintervals = [ 200, 400 ];
+s.octetsformat = 'hex';
+for each(var device in n.agents()) {
+  s.host = device;
+  var rows = {};
+  var walkOK = walkSNMPTable(s, "1.3.6.1.2.1.17", "2", rows, "1.3.6.1.2.1.17.2.15");
+  var ticks = rows['3.0']; // tick=0.01s
+  var now = new Date();
+  now_ms = now.getTime();
+  var lastChange = new Date(now_ms - (10 * ticks));
+  var rootAgent = null;
+  var stpRoot="" + rows['5.0'];
+  if(stpRoot != null) {
+    var bytes = stpRoot.split(":");
+    var mac = "" + bytes[2] + bytes[3] + bytes[4] + bytes[5] + bytes[6] + bytes[7];
+    var rootPath = n.pathForDeviceAddress(mac);
+    if(rootPath) {
+      n.path = rootPath;
+      rootAgent = n.agentIP();
+    }
+  } 
+  dot1stp.addRow([device,rows['1.0'],rows['2.0'],ticks,lastChange,rows['4.0'],stpRoot,rootAgent,rows['6.0'],rows['7.0'],rows['8.0'],rows['9.0'],rows['10.0'],rows['11.0'],rows['12.0'],rows['13.0'],rows['14.0']]);
+}
+
+dot1stp.sort(3, true);
+report.table(dot1stp);
+
+    ]]></script>
+  </section>
+  <section name="Routing Table">
+    <description>Get Routing Table</description>
+    <input name="device" type="address" required="true" />
+    <input name="community" type="string" required="false" />
+    <script><![CDATA[
+ 
+//////////////////// utility functions //////////////////////////////
+
+function walkSNMPTable(s, tab, col, ans) {
+  var table = tab + "." + col;
+  s.oid = table;
+  var walking = true;
+  var nrows = 0;
+  var err = false;
+  while(walking) {
+    try {
+      var vals = s.getnext();
+      var thisoid = s.oid[0];
+      if(thisoid.indexOf(table) != 0) walking = false;
+      else {
+        var key = thisoid.slice(table.length+1);
+        ans[key] = vals[0];
+        nrows++;
+      }
+    }
+    catch(exception) {
+      err = true;
+      walking = false;
+    }
+  }
+  return (nrows > 0 || !err);
+}
+
+//////////////////// main script //////////////////////////////
+
+var report = new Report();
+
+var s = new SNMP();
+s.host = device;
+if(typeof(community) != 'undefined') {
+  s.useconfig = false;
+  s.community = community;
+  s.version = "2c";
+}
+
+function Route(ip) {
+  this.ip = ip;
+  this.mask = null;
+  this.intf = null;
+  this.nextHop = null;
+}
+
+var rows = {};
+var walkOK = walkSNMPTable(s, "1.3.6.1.2.1.4.21", "1", rows);
+if(walkOK) {
+  var routes = {};
+  for (var k in rows) {
+    var n = k.split(".");
+    var col = n.shift();
+    var ip = n.join('.');
+    if(routes[ip] == null) routes[ip] = new Route(ip);
+    var val = rows[k];
+    if(col == 2) routes[ip].intf = device + ">" + val;
+    if(col == 7) routes[ip].nextHop = val;
+    if(col == 11) routes[ip].mask = val;
+  }
+  var results = Table.create(["ip", "mask", "I/F", "nextHop"],["address", "string", "interface", "address"]);
+  for each(var r in routes) {
+    results.addRow([r.ip, r.mask, r.intf, r.nextHop]);
+  }
+  results.sort(0);
+  report.table(results);
+}
+else {
+  report.paragraph("walk failed");
+}
+
+    ]]></script>
+  </section>
+  <section name="MAC To Interface">
+    <description>Read MAC to Interface tables (CAM tables) from any switch</description>
+    <input name="device" type="address" required="true" />
+    <input name="community" type="string" required="false" />
+    <script><![CDATA[
+
+
+//////////////////// utility functions //////////////////////////////
+
+function hexByte(n) {  return  ((n < 16) ? "0" : "") + n.toString(16); }
+
+function oidToMac(oid) {
+  var n = oid.split(".");
+  var str = "";
+  for(i = 0; i < 6; i++) str += hexByte(parseInt(n[i]));
+  return str;
+}
+
+function walkSNMPTable(s, tab, col, ans) {
+  var table = tab + "." + col;
+  s.oid = table;
+  var walking = true;
+  var nrows = 0;
+  var err = false;
+  while(walking) {
+    try {
+      var vals = s.getnext();
+      var thisoid = s.oid[0];
+      if(thisoid.indexOf(table) != 0) walking = false;
+      else {
+        var key = thisoid.slice(table.length+1);
+        ans[key] = vals[0];
+        nrows++;
+      }
+    }
+    catch(exception) {
+      err = true;
+      walking = false;
+    }
+  }
+  return (nrows > 0 || !err);
+}
+
+function getPortToIfIndex(s) {
+  var ans = new Array();
+  walkSNMPTable(s, "1.3.6.1.2.1.17.1.4.1", "2", ans);
+  return ans;
+}
+
+function walkVlanTable(s) {
+  var vlans = new Array();
+  var rows = new Array();
+  if(walkSNMPTable(s, "1.3.6.1.4.1.9.9.46.1.3.1.1.2", "1", rows)) {
+    for (var k in rows) {
+      var elements = k.split(".");
+      vlans.push(elements[0]);
+    }
+  }
+  return vlans;
+}
+
+function walkFdbTable(s, prt2If, vlan, tab) {
+  var rows = new Array();
+  var walkOK = walkSNMPTable(s, "1.3.6.1.2.1.17.4.3.1", "2", rows);
+  if(walkOK) {
+    for (var k in rows) {
+       var mac_hex = oidToMac(k);
+       var prt = rows[k];
+       tab.addRow(new Array(mac_hex, prt2If[prt], prt, vlan));
+    }
+  }
+  return walkOK;
+}
+
+function walkDot1qFdbTable(s, prt2If, vlan, tab) {
+  var rows = new Array();
+  var walkOK = walkSNMPTable(s, "1.3.6.1.2.1.17.7.1.2.2.1", "2", rows);
+  if(walkOK) {
+    for (var k in rows) {
+       var n = k.split(".");
+       var v = n.shift();
+       var macoid = n.join('.');
+       var mac_hex = oidToMac(macoid);
+       var prt = rows[k];
+       tab.addRow(new Array(mac_hex, prt2If[prt], prt, v));
+    }
+  }
+  return walkOK;
+}
+
+//////////////////// main script //////////////////////////////
+
+var report = new Report();
+
+var results = Table.create(["mac", "ifIndex", "port", "vlan"],["address", "integer", "integer", "integer"]);
+var qresults = Table.create(["mac", "ifIndex", "port", "vlan"],["address", "integer", "integer", "integer"]);
+
+var s = new SNMP();
+s.host = device;
+if(typeof(community) != 'undefined') {
+  s.useconfig = false;
+  s.community = community;
+  s.version = "2c";
+}
+
+var portToIfIndex = getPortToIfIndex(s);
+
+if(!walkDot1qFdbTable(s, portToIfIndex, "0", qresults)) {
+  report.paragraph("ERROR: Q-BRIDGE-MIB SNMP walk failed");
+}
+
+if(!walkFdbTable(s, portToIfIndex, "0", results)) {
+  report.paragraph("ERROR: BRIDGE-MIB SNMP walk failed");
+}
+else {
+  var n = new Network();
+  n.path = device;
+  var sysObjId = n.sysObjectID();
+  if (sysObjId.indexOf(".1.3.6.1.4.1.9.") == 0 && s.useconfig == false) {
+    // cisco device - try community string indexing
+    var vlans = walkVlanTable(s);
+    for each (var vlan in vlans) {
+       s.community = community + "@" + vlan;
+       if(!walkFdbTable(s, getPortToIfIndex(s), vlan, results)) {
+         report.paragraph("Note: community string indexing not used by this device");
+         break;
+      }
+    }
+  }
+}
+
+report.paragraph("BRIDGE-MIB:");
+report.table(results);
+report.paragraph("Q-BRIDGE-MIB:");
+report.table(qresults);
+
+    ]]></script>
+  </section>
+</template>
+

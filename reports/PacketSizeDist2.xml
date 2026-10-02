@@ -1,0 +1,52 @@
+<template name="Historical Packet Size Distribution" category="traffic">
+  <description>Trend Historical Packet Size Distribution</description>
+    <section name="Historical Packet Size Distribution">
+       <description>Trend Historical Packet Size Distribution</description>
+       <usage>Note that the &quot;size*&quot; value fields used in this report can only be populated from packet-oriented measurement feeds (sFlow or XRMON) </usage>
+       <input label="Interval" name="interval" type="interval.history" value="today" />
+       <input label="Group" name="group" type="group" value="hour" />
+       <input label="Title" name="charttitle" type="string" required="false" />
+       <input label="Height[pixels]" name="height" type="integer" required="false" />
+       <input label="Width[pixels]" name="width" type="integer" required="false" />
+       <input label="Where" name="where" type="filter.historytrmx" required="false" />
+       <script><![CDATA[
+
+	   var report = Report.current();
+	   // construct the filter
+	   var filter = "";
+	   if(typeof(where) != 'undefined') filter = where;
+	   
+	   // collect the columns
+	   var counters = ["sizeto63","size64","sizeto127","sizeto255","sizeto511","sizeto1023","sizeto1518","sizejumbo"];
+	   var cnames1 = ["time"];
+	   var cnames2 = [];
+	   for each(var cntr in counters) {
+	       cnames1.push("rate(" + cntr + ")");
+	       cnames2.push(cntr);
+	   }
+
+	   // make the query
+	   var query = new Query.trend("historytrmx",[cnames1, cnames2],filter,interval,[group, null]);
+	   query.multiquery=true;
+	   var tables = query.run();
+	   var tab1 = tables[0];
+	   var tab2 = tables[1];
+	   
+	   // make the chart
+	   var title = typeof(charttitle) != 'undefined' ? charttitle : 'Packet Size Distribution';
+	   var chart = Chart.multiSeries('trend',title,tab1,null,0,'Fps',Chart.range(1,tab1.ncols -1));
+	   chart.stack=true;
+	   chart.legend = true;
+	   
+	   // add to the report
+	   if(typeof(where) != 'undefined') report.paragraph("Traffic Filter: " + where);
+	   report.chart(chart);
+
+	   // and add the totals too
+	   report.heading("Totals");
+	   report.table(tab2);
+
+     ]]></script>
+  </section>
+</template>
+

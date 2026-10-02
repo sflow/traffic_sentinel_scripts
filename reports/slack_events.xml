@@ -1,0 +1,128 @@
+<template name="Slack Events" category="events">
+  <description>Forward event summaries to Slack channel</description>
+  <section name="Slack Events">
+  <description>Forward event summaries to Slack channel</description>
+      <input label="Interval" name="interval" type="interval.realtime" value="last5minutes" />
+      <input label="Severity" name="severity" type="string" value="severe">
+        <option value="all" />
+        <option value="warn,severe" />
+        <option value="severe" />
+      </input>
+      <input label="Storm limit" name="stormLimit" type="integer" value="10" />
+    <script><![CDATA[
+      var report = Report.current();
+      var title = title || "Traffic Sentinel Events";
+      var slackWebHook = preference("eventHookURL");
+      var myServer = preference("eventHookServer");
+      var eventsURL = "https://" + myServer + "/inmsf/Events";
+      var storm = parseInt(stormLimit);
+
+      // persistent storage to remember where we stopped last time
+      var since = "0.0";
+      var cookie = "slack_events_last";
+      var store = report.retrieveTable(cookie);
+      if (store && store.nrows > 0) {
+	since = store.cell(0,0);
+      }
+      else {
+	store = Table.create(["since"],["string"]);
+	store.addRow([since]);
+      }
+
+      var msg = {};
+      msg.text = title;
+      // msg.attachments = [];
+      var linkCount=0;
+
+      function addLink(text, url) {
+	msg.text += "\n<"+url+"|"+text+">";
+	linkCount++;
+      }
+
+      var query = new Query();
+      query.view = "events";
+      query.select = "id,timestamp,severity,type,name,value,comment,address,interface";
+      query.interval = interval;
+      query.nullsinkeys = true;
+      query.includeother = true;
+      query.truncate = 10 * storm;
+      if(severity != "all") {
+	query.where = "severity=" + severity;
+      }
+      var nw = Network.current();
+      var lastid = since;
+      
+      function newer(id1, id2) {
+	var [ts1,n1] = id1.split(".");
+	var [ts2,n2] = id2.split(".");
+	ts1 = parseInt(ts1);
+	ts2 = parseInt(ts2);
+	n1 = parseInt(n1);
+	n2 = parseInt(n2);
+	return(ts1 > ts2 || (ts1 == ts2 && n1 > n2));
+      }
+
+      var evtTab = query.run();
+      report.table(evtTab);
+      for(var rr = 0; rr < evtTab.nrows; rr++) {
+	var [id,timestamp,severity,type,name,value,comment,address,ds] = evtTab.row(rr);
+	id = id.toString();
+	if(newer(id,since)) {
+	  var text = name;
+	  if(name == "report") {
+  	    if(comment)
+	      text += ": " + comment;
+          }
+          else {
+	    text += " = " + value;
+	    if(comment)
+              text += " (" + comment + ")";
+          }
+	  if(ds || address) {
+	    var zone,group,agentName,portName;
+	    nw.path = ds || address;
+	    portName = ds ? nw.displayName() : null;
+	    agentName = nw.agent();
+	    zone = nw.zone();
+	    group = nw.group();
+	    if(agentName) {
+              text +=  " : *#" + zone + "* &gt; " + group + " &gt; " + agentName;
+	      if(portName)
+                text += " &gt; " + portName;
+	    }
+	    else {
+	      text += " : " + address;
+	    }
+	  }
+	  var url = eventsURL + "?action=id&id=" + id;
+	  addLink(text, url);
+	  lastid = id;
+	}
+      }
+
+      // store for next time
+      store.deleteRow(0);
+      store.addRow([lastid]);
+      report.storeTable(cookie, store); 
+
+      if(linkCount > storm) {
+	// reset and just send one link
+	msg.text = title;
+	var url = eventsURL + "?action=list";
+	report.paragraph("Sending event storm warning(" + linkCount + " events) to Slack");
+	var text = "event-storm(" + linkCount + ")";
+	addLink(text, url);
+      }
+
+      if(linkCount) {
+	report.paragraph("Sending " + linkCount + " links in Slack message");
+	var ans = readurl(slackWebHook,
+			  "POST",
+			  "application/json",
+			  JSON.stringify(msg));
+	report.paragraph("Slack response=" + ans);
+      }
+
+    ]]></script>
+  </section>
+</template>

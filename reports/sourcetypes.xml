@@ -1,0 +1,139 @@
+<template name="Agent Monitoring" category="inventory">
+  <description>List agents and how they are being monitored for flows and counters.</description>
+  <section name="Agent Monitoring">
+    <description>List agents and how they are being monitored for flows and counters.</description>
+    <input name="interval" type="interval.realtime" required="true" value="last60minutes" />
+    <input name="path" type="path" required="true" value=">" />
+    <script><![CDATA[
+
+function Agent(ip) {
+    this.ip = ip;
+    this.flowsProtocols = "";
+    this.flowSamples = 0;
+    this.counterProtocols = "";
+    this.counterSamples = 0;
+    this.counterFlags = 0;
+    this.flowFlags = 0;
+};
+
+var agents = {};
+
+function getAgent(ip) {
+    var ag = agents[ip];
+    if(!ag) {
+	ag = new Agent(ip);
+	agents[ip] = ag;
+    }
+    return ag;
+}
+
+var where = "path='" + path + "'";
+var view = "rtfanout";
+var select = "agent,set(dsflowsprotocol),rate(samples),or(dsflags)";
+var intervalSeconds = 0;
+var query = Query.topN(view, select, where, interval);
+query.nullsinkeys=true;
+query.run(function(row) {
+	var ag = getAgent(row[0]);
+	ag.flowsProtocols = row[1];
+	ag.flowSamples = row[2];
+	ag.flowFlags |= row[3];
+    });
+
+view = "rtdatasource";
+select = "agent,set(dscountersprotocol),rate(statssamplesreceived),or(counterflags),datagramsreceived,datagramslost";
+query = Query.topN(view, select, where, interval);
+query.run(function(row) {
+	var ag = getAgent(row[0]);
+	ag.counterProtocols = row[1];
+	ag.counterSamples = row[2];
+	ag.counterFlags |= row[3];
+	ag.dg_loss_pc = 0;
+	if(row[5] && row[4] && row[4] > 0)
+	  ag.dg_loss_pc = 100 * row[5] / row[4];
+    });
+
+view = "host";
+select = "agent,or(counterflags),first(hostname)";
+query = Query.topN(view, select, where, interval);
+query.run(function(row) {
+	var ag = getAgent(row[0]);
+	ag.counterFlags |= row[1];
+	ag.hostname = row[2];
+    });
+
+var table = Table.create(["Agent", "flows", "Samples/min", "Counters", "Counter-samples/min", "Pkt Loss%", "VLANs", "Router", "I/F counters", "Ethernet Counters", "Host", "Hostname", "Hypervisor", "HTTP", "Memcache", "Enterprise", "Java",  "SNMP CDP rows", "SNMP LLDP rows", "sysDescr"],
+			 ["agent", "string", "double",     "string",   "double",              "double",         "string","string", "string",       "string",            "string","string",  "string",   "string", "string", "string",     "string",  "integer",        "integer",         "string"  ]);
+
+function bitTest(num, mask) {
+    return (num & mask) ? 1 : 0;
+}
+
+var n = Network.current();
+var totals = {};
+
+function incTotal(col) {
+    if(col) {
+	if(!totals[col]) totals[col]=0;
+	totals[col]++;
+    }
+}
+
+function snmpTableRows(tableName) {
+  var tab = n.snmpTable(tableName);
+  return tab ? tab.nrows : 0;
+}
+
+for each (var ag in agents) {
+  var row = [ ag.ip,
+	      ag.flowsProtocols,
+	      (ag.flowSamples * 60),
+	      ag.counterProtocols,
+	      (ag.counterSamples * 60),
+	      ag.dg_loss_pc,
+	      bitTest(ag.flowFlags, 0x08),
+	      bitTest(ag.flowFlags, 0x10),
+	      bitTest(ag.counterFlags, 0x0000001),
+	      bitTest(ag.counterFlags, 0x0000002),
+	      bitTest(ag.counterFlags, 0x00005C0),
+	      ag.hostname,
+	      bitTest(ag.counterFlags, 0x001E000),
+	      bitTest(ag.counterFlags, 0x0080000),
+	      bitTest(ag.counterFlags, 0x0040000),
+	      bitTest(ag.counterFlags, 0x0400000),
+	      bitTest(ag.counterFlags, 0x0200000) ];
+  n.path=ag.ip;
+  row.push(snmpTableRows("cdp"));
+  row.push(snmpTableRows("lldp"));
+  row.push(n.sysDescr());
+  table.addRow(row);
+  if(ag.flowsProtocols) incTotal("Flows="+ag.flowsProtocols);
+  if(ag.countersProtocols) incTotal("Counters="+ag.countersProtocols);
+  if(row[5]) incTotal("Reporting traffic by VLAN");
+  if(row[6]) incTotal("Reporting router forwarding details");
+  if(row[7]) incTotal("Reporting I/F Counters");
+  if(row[8]) incTotal("Reporting Ethernet Counters");
+  if(row[9]) incTotal("Reporting host-sFlow");
+
+  if(row[11]) incTotal("Hypervisor");
+  if(row[12]) incTotal("sFlow-HTTP monitoring");
+  if(row[13]) incTotal("sFlow-MEMCACHE monitoring");
+  if(row[14]) incTotal("sFlow-APPLICATION monitoring");
+  if(row[15]) incTotal("sFlow-JavaVM monitoring");
+  if(row[16]) incTotal("SNMP CDP monitoring");
+  if(row[17]) incTotal("SNMP LLDP monitoring");
+}
+table.sort(0);
+var rpt = Report.current();
+rpt.paragraph("Interval: " + interval);
+rpt.table(table);
+
+var totalsTable = Table.create(["Property", "Number of Agents"],
+			       ["string", "integer"]);
+for(var prop in totals) totalsTable.addRow([prop, totals[prop]]);
+totalsTable.sort(0);
+rpt.table(totalsTable);
+
+    ]]></script>
+  </section>
+</template>

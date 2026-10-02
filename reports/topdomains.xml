@@ -1,0 +1,24 @@
+<template name="Top Domains" category="miscellaneous">
+  <description>Traffic rolled up by domain</description>
+  <section name="Top Domains">
+    <description>Traffic rolled up by domain</description>
+    <input label="Interval" name="interval" type="interval.history" value="today" />
+    <input label="Truncate" name="n" type="integer" value="20" />
+    <input label="Level" name="level" type="integer" value="2" />
+    <input label="Where" name="where" type="filter.historytrmx" required="false" />
+   <script><![CDATA[
+var view     = "historytrmx";
+var select1  = "domain(sourcename " + level + "),bytes";
+var select2  = "domain(destinationname " + level + "),bytes";
+var select = [select1, select2];
+var sort     = "bytes";
+if(typeof(where) == 'undefined') where = "";
+var query = Query.topN(view, select, where, interval, sort, n);
+query.multiquery = true;
+var tables = query.run();
+var rpt = Report.current();
+rpt.table(tables[0]);
+rpt.table(tables[1]);
+    ]]></script>
+  </section>
+</template>

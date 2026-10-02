@@ -1,0 +1,190 @@
+<template name="List Hosts with VLAN (for selected VLANs / Vendor Code)" category="inventory">
+    <description>List hosts and the switch port connecting them to the network (including port-based VLAN).</description>
+    <section name="List Hosts with VLAN (for selected VLANs / Vendor Code)">
+       <description>List hosts and the switch port connecting them to the network (including port-based VLAN).</description>
+	   <usage>The optional VLANs setting can be a comma separated list of ranges,  e.g. &quot;101,105,200-299&quot;. The Vendor Code should take the form &quot;080009&quot; or &quot;08:00:09&quot; or &quot;08-00-09&quot;.  If an activity interval is supplied then a traffic query will be used to add addresses that may not map cleanly into one VLAN or may not be located on an interface you are monitoring.  Remove the activity interval to turn off this query.  The Max VLANs setting helps to eliminate router MACs that may carry many VLANs.</usage>
+       <input name="path" label="Path" type="path" value="" required="false" />
+       <input name="vlans" label="VLANs" type="string" value="1-10,15,20" required="false" />
+       <input name="vendor" label="Vendor Code" type="string" value="005056" required="false" />
+       <input name="interval" label="Activity Interval" type="interval.realtime" value="last60minutes" required="false" />
+       <input name="max_vlans" label="Max VLANs" type="integer" value="3" />
+       <script><![CDATA[
+var report = Report.current();
+
+var network = Network.current();
+
+var macs = {};
+function MAC(mac, loc) {
+  this.mac = mac;
+  this.loc = loc;
+  this.loc_firm = false;
+  this.home_vlans = {};
+  this.other_vlans = {};
+  this.vlan_count = 0;
+}
+function getMAC(mac, loc) {
+    var entry = macs[mac];
+    if(entry) {
+	if(loc) entry.loc = loc;
+    }
+    else {
+	entry = new MAC(mac, loc);
+	macs[mac] = entry;
+    }
+    return entry;
+}
+
+function sawMAC(entry, ifx, vlan) {
+   if(ifx == entry.loc) {
+       entry.home_vlans[vlan] = ifx;
+       if(entry.other_vlans[vlan]) delete entry.other_vlans[vlan];
+       else entry.vlan_count++;
+   }
+   else if (!(vlan in entry.home_vlans)) {
+       entry.other_vlans[vlan] = ifx;
+       entry.vlan_count++;
+   }
+}
+
+
+if(typeof(path) != 'undefined') {
+    report.paragraph("Path selected: " + path);
+    network.path = path;
+}
+var vendorCode = null;
+if(typeof(vendor) != 'undefined') {
+    vendorCode = vendor.toUpperCase();
+    vendorCode = vendorCode.replace(/:/g,"");
+    vendorCode = vendorCode.replace(/-/g,"");
+    report.paragraph("Vendor Code selected: " + vendorCode);
+}
+
+if(typeof(interval) != 'undefined') {
+  // cast a general query to pick up MACs that may not map cleanly to one
+  // VLAN or one interface.  Populate a lookup we can use later.
+    var view     = "rttraffic";
+    var select   = "macsource,vlansource,inputinterface,macsourcelocation";
+
+    var where    = "";
+    var vlanFilter = null;
+    var vendorFilter = null;
+    if(typeof(vlans) != 'undefined')vlanFilter = "vlansource=" + vlans;
+    if(vendorCode)vendorFilter = " macsourcevendor=" + vendorCode;
+    if(vlanFilter) where += vlanFilter;
+    if(vendorFilter) {
+	if(where) where += " & ";
+        where += vendorFilter;
+    }
+
+    var query = Query.topN(view, select, where, interval);
+    query.run(function(row) {
+	    var mac = row[0];
+	    var vlan = row[1];
+	    var ifx = row[2];
+	    var loc = row[3];
+	    var entry = getMAC(mac,loc);
+	    if(entry.vlan_count > max_vlans) return;
+	    sawMAC(entry, ifx, vlan);
+	});
+}
+
+var interfaces = network.interfaces();
+var macmap = network.interfaceToMacMap(interfaces);
+var ifToVlan = network.interfaceToVLANMap(interfaces);
+
+// construct vlanlookup
+var vlanlookup = null;
+if(typeof(vlans) != 'undefined') {
+    vlanlookup = {};
+    report.paragraph("VLANs selected: " + vlans);
+    // extract list of ranges into hash lookup
+    vlanlist = vlans.split(",");
+    for each (var tok in vlanlist) {
+	    var range = tok.split("-");
+	    var rangestart = range[0];
+	    var rangestop = (range.length == 2) ? range[1] : rangestart; 
+	    for(var ii = rangestart; ii <= rangestop; ii++) vlanlookup[ii] = true;
+	}
+}
+
+// splice in data from the the interfaceToMacMap
+for(var i = 0; i < interfaces.length; i++) {
+    var loc = interfaces[i];
+    var vlan = ifToVlan[i];
+    if(vlanlookup && !vlanlookup[vlan]) continue;
+    var imacs = macmap[i];
+    if(imacs != null) {
+	for(var j = 0; j < imacs.length; j++) {
+	    var mac = imacs[j];
+            if(vendorCode == null || mac.indexOf(vendorCode) == 0) {
+		entry = getMAC(mac, loc);
+		sawMAC(entry, loc, vlan);
+		// indicate that this was a fully located MAC
+		entry.loc_firm = true;
+	    }
+	}
+    }
+}
+
+function vlanList(vlans) {
+    var list = [];
+    for (var vl in vlans) list.push(vl);
+    list.sort(function(a,b) { return a - b; });
+    return list;
+}
+
+// now start constructing the result table
+var ifColName = "interface";
+var table = Table.create(["macaddress",ifColName,"location type","vlans at source","other vlans"],["address","interface","string","string","string"]);
+for each (var entry in macs) {
+	table.addRow([entry.mac,
+		      entry.loc,
+		      entry.loc_firm ? "located" : "ESTIMATED",
+		      vlanList( entry.home_vlans),
+		      vlanList(entry.other_vlans)]);
+    }
+
+// insert vendor names
+table.insertColumn("manufacturer","string",network.vendorMap(table.cdata[0]),1);
+
+// insert l3 address mappings and DNS names
+var l3addrs = network.addressMap(table.column(0));
+var addrcol0 = new Array();
+var addrcol1 = new Array();
+for(var i = 0; i < l3addrs.length; i++) {
+    var addrs = l3addrs[i];
+    if(addrs) {
+	if(addrs.length >= 1) addrcol0[i] = addrs[0];
+	if(addrs.length >= 2) addrcol1[i] = addrs[1];
+    }
+}
+table.insertColumn("address2","address",addrcol1,0);
+table.insertColumn("address1","address",addrcol0,0);
+table.insertColumn("name","string",network.dnsMap(table.cdata[0]),0);
+table.sort(0);
+
+var interfaceCol = table.cnames.indexOf(ifColName);
+var linkStatus = new Array();
+for(var r = 0; r < table.nrows; r++) {
+    var intf = table.cell(r, interfaceCol);
+    var state = "";
+    if(intf) {
+	network.path = intf;
+	var speed = network.ifSpeed();
+	var duplex = network.ifDirection();
+	var up = (network.ifOperStatus() == 1) ? "up" : "down";
+	var duplexStr = "";
+	if(duplex == 1) duplexStr = "-full";
+	if(duplex == 2) duplexStr = "-half";
+	state += up + "-" + (speed/1000000) + "M" + duplexStr;
+    }
+    linkStatus.push(state);
+}
+table.addColumn("link", "string", linkStatus);
+
+report.table(table);
+
+
+       ]]></script>
+    </section> 
+</template>

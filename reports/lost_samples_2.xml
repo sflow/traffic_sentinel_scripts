@@ -1,0 +1,85 @@
+<template name="Lost Samples" category="miscellaneous">
+  <description>Report on lost samples</description>
+  <section name="Lost Samples">
+    <description>Report on lost samples</description>
+     <input label="Interval" name="interval" type="interval.realtime" value="last60minutes"/>
+     <input label="Sort" name="sortcol" type="string" value="lost_total">
+       <option value="flowsamplesreceived">Flow Samples Rx</option>
+       <option value="flowsampleslost">Flow Samples Lost</option>
+       <option value="statssamplesreceived">Counters Samples Rx</option>
+       <option value="statssampleslost">Counter Samples Lost</option>
+       <option value="lost_total">Total Lost</option>
+     </input>
+     <input label="Sort Order" name="sortorder" type="string" value="descending">
+     <option value="descending"> Descending (highest to lowest) </option>
+     <option value="ascending"> Ascending (lowest to highest) </option>
+     </input>
+     <input label="Where" name="where" type="filter.rtdatasource" required="false" />
+    <script><![CDATA[
+var where = where || "";
+var basefilter = "";
+if(where)  basefilter = "(" + where + ")" + " & ";
+var filter = basefilter;
+
+function setColNames(tab) {
+    tab.cnames[1] = "Flow Samples Received";
+    tab.cnames[2] = "Flow Samples Lost";
+    tab.cnames[3] = "Counter Samples Received";
+    tab.cnames[4] = "Counter Samples Lost";
+    tab.cnames[5] = "Total Lost";
+}
+
+var rep = Report.current();
+var view     = "rtdatasource";
+var select   = "flowsamplesreceived,flowsampleslost,statssamplesreceived,statssampleslost,lost_total[sum(flowsampleslost statssampleslost)]";
+var n        = "10";
+var query = Query.topN(view, "group," + select, filter, interval, sortcol, n);
+query.sortorder = sortorder;
+var tab1 = query.run();
+setColNames(tab1);
+rep.heading("Lost Samples By Group");
+rep.table(tab1);
+
+if(tab1.nrows > 0) {
+
+    var top = tab1.cell(0,0);
+    rep.heading("Lost Samples Breakdown for Group: " + top);
+
+    filter = basefilter + "group=" + top;
+    rep.paragraph("filter=" + filter);
+    var query2 = Query.topN(view, "agent," + select, filter, interval, sortcol, n);
+    query2.sortorder = sortorder;
+    var tab2 = query2.run();
+    setColNames(tab2);
+    rep.table(tab2);
+
+    if(tab2.nrows > 0) {
+
+	var top = tab2.cell(0,0);
+	rep.heading("Lost Samples Breakdown for Agent: " + top);
+
+	filter = basefilter + "agent=" + top;
+	rep.paragraph("filter=" + filter);
+	var query3 = Query.topN(view, "interface," + select, filter, interval, sortcol, n);
+	query3.sortorder = sortorder;
+	var tab3 = query3.run();
+	setColNames(tab3);
+	rep.table(tab3);
+
+	if(tab3.nrows > 0) {
+	    var intf = tab3.cell(0,0);
+
+	    rep.heading("Trend Lost Samples for Interface: " + intf);
+	    filter = basefilter + "interface=" + intf;
+	    var query4 = Query.trend(view, "time," + select, filter, interval, 5);
+	    query4.sortorder = sortorder;
+	    var tab4 = query4.run();
+	    setColNames(tab4);
+	    rep.table(tab4);
+	}
+    }
+}
+
+    ]]></script>
+  </section>
+</template>
